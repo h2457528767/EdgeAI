@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>手写数字 → MNIST C 数组生成器</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#262b36;
+    --fg:#e6e9ef; --dim:#8b93a7; --acc:#4f9cf9; --acc2:#28c76f;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:20px; background:var(--bg); color:var(--fg);
+    font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    font-size:14px; line-height:1.6;
+  }
+  h1{font-size:18px;margin:0 0 4px;font-weight:600}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:18px}
+  .wrap{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+  .col-left{flex:0 0 auto}
+  .col-right{flex:1 1 420px;min-width:340px}
+
+  #draw{
+    width:280px;height:280px;display:block;border-radius:8px;
+    background:#000;cursor:crosshair;touch-action:none;
+    border:1px solid var(--line);
+  }
+  .toolbar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  button{
+    background:#222836;color:var(--fg);border:1px solid var(--line);
+    border-radius:7px;padding:7px 14px;font-size:13px;cursor:pointer;
+    transition:.15s;font-family:inherit;
+  }
+  button:hover{background:#2b3346;border-color:#3a4358}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+  button.primary:hover{background:#3d8ae8}
+  button.ghost{background:transparent}
+
+  .row{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .row label{color:var(--dim);font-size:13px;min-width:74px}
+  input[type=text],input[type=number]{
+    background:#0d1017;border:1px solid var(--line);color:var(--fg);
+    border-radius:6px;padding:6px 9px;font-size:13px;font-family:inherit;width:130px;
+  }
+  input[type=range]{width:130px;accent-color:var(--acc)}
+  input[type=checkbox]{accent-color:var(--acc);width:15px;height:15px}
+  .val{color:var(--acc);font-variant-numeric:tabular-nums;min-width:34px;font-size:13px}
+
+  .preview-box{display:flex;gap:14px;align-items:center;margin-bottom:16px}
+  #preview{
+    width:168px;height:168px;image-rendering:pixelated;border-radius:6px;
+    border:1px solid var(--line);background:#000;
+  }
+  .hint{color:var(--dim);font-size:12px;line-height:1.7}
+
+  #output{
+    width:100%;height:300px;resize:vertical;background:#0b0d12;color:#b8e0a0;
+    border:1px solid var(--line);border-radius:8px;padding:12px;
+    font-family:"SF Mono",Consolas,"Courier New",monospace;font-size:12px;
+    line-height:1.45;white-space:pre;overflow:auto;
+  }
+  .out-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .badge{font-size:12px;color:var(--dim)}
+  .badge b{color:var(--acc2)}
+  hr{border:none;border-top:1px solid var(--line);margin:16px 0}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+
+<h1>手写数字 → MNIST C 数组生成器</h1>
+<div class="sub">在黑色画布上写一个数字，自动做 MNIST 标准化（裁剪 → 缩放到 20×20 → 重心居中 → 28×28），输出可直接编译的 C 数组。</div>
+
+<div class="wrap">
+  <!-- 左：画板 -->
+  <div class="panel col-left">
+    <canvas id="draw" width="280" height="280"></canvas>
+    <div class="toolbar">
+      <button id="btnClear" class="ghost">清空</button>
+      <button id="btnGen" class="primary">生成数组</button>
+    </div>
+    <div class="toolbar" style="margin-top:10px">
+      <label style="color:var(--dim);font-size:13px;display:flex;align-items:center;gap:8px">
+        笔刷 <input type="range" id="brush" min="6" max="30" value="14">
+        <span class="val" id="brushVal">14</span>
+      </label>
+    </div>
+  </div>
+
+  <!-- 右：预览 + 选项 + 输出 -->
+  <div class="panel col-right">
+    <div class="preview-box">
+      <canvas id="preview" width="168" height="168"></canvas>
+      <div class="hint">
+        这是送入模型的 <b>28×28</b> 位图。<br>
+        数字被缩放到最长边 20 像素，<br>
+        再按<b>重心</b>对齐到 28×28 中心，<br>
+        与 MNIST 官方预处理一致。
+      </div>
+    </div>
+
+    <hr>
+
+    <div class="row">
+      <label>变量名</label>
+      <input type="text" id="varname" value="mnist_pic">
+      <label style="min-width:auto;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="progmem" checked> PROGMEM
+      </label>
+    </div>
+
+    <div class="row">
+      <label>输出格式</label>
+      <label style="min-width:auto;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="binary"> 二值化 (0/1)
+      </label>
+      <label style="min-width:auto;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="hex"> 十六进制
+      </label>
+      <label style="min-width:auto;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="invert"> 反色
+      </label>
+    </div>
+
+    <div class="row" id="thrRow">
+      <label>二值阈值</label>
+      <input type="range" id="thr" min="1" max="254" value="128">
+      <span class="val" id="thrVal">128</span>
+    </div>
+
+    <div class="row">
+      <label>每行个数</label>
+      <input type="number" id="perline" value="28" min="1" max="28">
+      <span class="hint">（28 = 一行一个像素行）</span>
+    </div>
+
+    <hr>
+
+    <div class="out-head">
+      <div class="badge" id="badge">等待绘制…</div>
+      <div style="display:flex;gap:8px">
+        <button id="btnCopy" class="ghost">复制</button>
+        <button id="btnDownload" class="ghost">下载 .h</button>
+      </div>
+    </div>
+    <textarea id="output" spellcheck="false" readonly></textarea>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ============ 常量 ============ */
+  const G = 28;                 // 目标分辨率
+  const CANVAS = 280;           // 画布像素
+  const CELL = CANVAS / G;      // 10
+
+  /* ============ 画布初始化 ============ */
+  const drawEl = document.getElementById('draw');
+  const dctx = drawEl.getContext('2d', { willReadFrequently: true });
+
+  const tmp = document.createElement('canvas');
+  tmp.width = tmp.height = G;
+  const tctx = tmp.getContext('2d');
+
+  const previewEl = document.getElementById('preview');
+  const pctx = previewEl.getContext('2d');
+
+  function clearCanvas(){
+    dctx.fillStyle = '#000';
+    dctx.fillRect(0, 0, CANVAS, CANVAS);
+  }
+  clearCanvas();
+
+  /* ============ 绘图交互 ============ */
+  let drawing = false, lastPt = null;
+
+  function getBrush(){
+    return +document.getElementById('brush').value;
+  }
+
+  function pos(e){
+    const r = drawEl.getBoundingClientRect();
+    return {
+      x: (e.clientX - r.left) * CANVAS / r.width,
+      y: (e.clientY - r.top)  * CANVAS / r.height
+    };
+  }
+
+  function strokeSetup(){
+    dctx.strokeStyle = '#fff';
+    dctx.fillStyle = '#fff';
+    dctx.lineCap = 'round';
+    dctx.lineJoin = 'round';
+    dctx.lineWidth = getBrush();
+  }
+
+  function dot(p){
+    strokeSetup();
+    dctx.beginPath();
+    dctx.arc(p.x, p.y, getBrush() / 2, 0, Math.PI * 2);
+    dctx.fill();
+  }
+
+  function line(a, b){
+    strokeSetup();
+    dctx.beginPath();
+    dctx.moveTo(a.x, a.y);
+    dctx.lineTo(b.x, b.y);
+    dctx.stroke();
+  }
+
+  drawEl.addEventListener('pointerdown', function(e){
+    e.preventDefault();
+    drawing = true;
+    drawEl.setPointerCapture(e.pointerId);
+    lastPt = pos(e);
+    dot(lastPt);
+  });
+
+  drawEl.addEventListener('pointermove', function(e){
+    if(!drawing) return;
+    e.preventDefault();
+    const p = pos(e);
+    line(lastPt, p);
+    lastPt = p;
+  });
+
+  function endStroke(e){
+    if(!drawing) return;
+    drawing = false;
+    lastPt = null;
+    generate();
+  }
+  drawEl.addEventListener('pointerup', endStroke);
+  drawEl.addEventListener('pointercancel', endStroke);
+  drawEl.addEventListener('pointerleave', function(e){
+    if(drawing && e.buttons === 0) endStroke(e);
+  });
+
+  /* ============ 1. 画布 → 28×28 灰度 ============ */
+  function sampleCanvas(){
+    const img = dctx.getImageData(0, 0, CANVAS, CANVAS).data;
+    const out = new Float32Array(G * G);
+    const n = CELL * CELL;
+
+    for (let y = 0; y < G; y++){
+      for (let x = 0; x < G; x++){
+        let sum = 0;
+        for (let dy = 0; dy < CELL; dy++){
+          const rowBase = ((y * CELL + dy) * CANVAS) * 4;
+          for (let dx = 0; dx < CELL; dx++){
+            const p = rowBase + (x * CELL + dx) * 4;
+            sum += (img[p] + img[p + 1] + img[p + 2]) / 3;
+          }
+        }
+        out[y * G + x] = sum / n / 255;   // 0..1
+      }
+    }
+    return out;
+  }
+
+  /* ============ 双线性采样 / 缩放 ============ */
+  function sampleBilinear(src, w, h, x, y){
+    const x0 = Math.floor(x), y0 = Math.floor(y);
+    const fx = x - x0, fy = y - y0;
+    const g = (xx, yy) =>
+      (xx < 0 || yy < 0 || xx >= w || yy >= h) ? 0 : src[yy * w + xx];
+    const v00 = g(x0, y0),     v10 = g(x0 + 1, y0);
+    const v01 = g(x0, y0 + 1), v11 = g(x0 + 1, y0 + 1);
+    return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy)
+         + v01 * (1 - fx) * fy       + v11 * fx * fy;
+  }
+
+  function resizeBilinear(src, sw, sh, tw, th){
+    const dst = new Float32Array(tw * th);
+    for (let y = 0; y < th; y++){
+      const sy = (y + 0.5) * sh / th - 0.5;
+      for (let x = 0; x < tw; x++){
+        const sx = (x + 0.5) * sw / tw - 0.5;
+        dst[y * tw + x] = sampleBilinear(src, sw, sh, sx, sy);
+      }
+    }
+    return dst;
+  }
+
+  /* ============ 2. MNIST 标准化 ============ */
+  function toMnist(raw){
+    const T = 0.12;                       // 判定"有墨"的阈值
+    let x0 = G, y0 = G, x1 = -1, y1 = -1;
+
+    for (let y = 0; y < G; y++){
+      for (let x = 0; x < G; x++){
+        if (raw[y * G + x] > T){
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+          if (y < y0) y0 = y;
+          if (y > y1) y1 = y;
+        }
+      }
+    }
+    if (x1 < 0) return new Float32Array(G * G);   // 空画布
+
+    // 裁剪到墨迹包围盒
+    const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+    const crop = new Float32Array(bw * bh);
+    for (let y = 0; y < bh; y++){
+      for (let x = 0; x < bw; x++){
+        crop[y * bw + x] = raw[(y0 + y) * G + (x0 + x)];
+      }
+    }
+
+    // 等比缩放到 20×20 内
+    const s  = 20 / Math.max(bw, bh);
+    const tw = Math.max(1, Math.round(bw * s));
+    const th = Math.max(1, Math.round(bh * s));
+    const small = resizeBilinear(crop, bw, bh, tw, th);
+
+    // 按重心居中到 28×28
+    let m = 0, cx = 0, cy = 0;
+    for (let y = 0; y < th; y++){
+      for (let x = 0; x < tw; x++){
+        const v = small[y * tw + x];
+        m += v; cx += x * v; cy += y * v;
+      }
+    }
+    let ox = 0, oy = 0;
+    if (m > 0){
+      cx /= m; cy /= m;
+      ox = Math.round(13.5 - cx);
+      oy = Math.round(13.5 - cy);
+    }
+    ox = Math.max(0, Math.min(G - tw, ox));
+    oy = Math.max(0, Math.min(G - th, oy));
+
+    const out = new Float32Array(G * G);
+    for (let y = 0; y < th; y++){
+      for (let x = 0; x < tw; x++){
+        out[(oy + y) * G + (ox + x)] = small[y * tw + x];
+      }
+    }
+    return out;
+  }
+
+  /* ============ 3. 预览渲染 ============ */
+  function renderPreview(m){
+    const img = tctx.createImageData(G, G);
+    for (let i = 0; i < G * G; i++){
+      const v = Math.round(Math.max(0, Math.min(1, m[i])) * 255);
+      img.data[i * 4]     = v;
+      img.data[i * 4 + 1] = v;
+      img.data[i * 4 + 2] = v;
+      img.data[i * 4 + 3] = 255;
+    }
+    tctx.putImageData(img, 0, 0);
+    pctx.imageSmoothingEnabled = false;
+    pctx.clearRect(0, 0, previewEl.width, previewEl.height);
+    pctx.drawImage(tmp, 0, 0, previewEl.width, previewEl.height);
+  }
+
+  /* ============ 4. 生成 C 代码 ============ */
+  function buildCode(m){
+    const binary  = document.getElementById('binary').checked;
+    const useHex  = document.getElementById('hex').checked && !binary;
+    const invert  = document.getElementById('invert').checked;
+    const thr     = +document.getElementById('thr').value;
+    const perLine = Math.max(1, Math.min(28, +document.getElementById('perline').value || 28));
+    const varname = (document.getElementById('varname').value || 'mnist_pic').trim();
+    const useProg = document.getElementById('progmem').checked;
+
+    const vals = new Array(G * G);
+    for (let i = 0; i < G * G; i++){
+      let v = m[i];
+      if (invert) v = 1 - v;
+      v = Math.max(0, Math.min(1, v));
+      vals[i] = binary ? (v * 255 >= thr ? 1 : 0)
+                       : Math.round(v * 255);
+    }
+
+    const fmt = useHex
+      ? v => '0x' + v.toString(16).toUpperCase().padStart(2, '0')
+      : (binary ? v => String(v) : v => String(v).padStart(3, ' '));
+
+    const lines = [];
+    for (let i = 0; i < vals.length; i += perLine){
+      const chunk = vals.slice(i, i + perLine).map(fmt).join(',');
+      lines.push('  ' + chunk + ',');
+    }
+
+    const comment = binary
+      ? '// 28x28 = 784 bytes, 二值化 (阈值 ' + thr + ')'
+      : '// 28x28 = 784 bytes, 灰度 0~255';
+
+    return comment + '\n'
+         + 'const uint8_t ' + varname + '[28*28]'
+         + (useProg ? ' PROGMEM' : '') + ' = {\n'
+         + lines.join('\n')
+         + '\n};\n';
+  }
+
+  /* ============ 5. 主流程 ============ */
+  const outEl   = document.getElementById('output');
+  const badgeEl = document.getElementById('badge');
+  let lastCode  = '';
+
+  function generate(){
+    const raw = sampleCanvas();
+    const m   = toMnist(raw);
+
+    let ink = 0;
+    for (let i = 0; i < m.length; i++) ink += m[i];
+
+    renderPreview(m);
+
+    if (ink < 1){
+      outEl.value = '// 画布为空，请先写一个数字';
+      badgeEl.textContent = '等待绘制…';
+      lastCode = '';
+      return;
+    }
+
+    lastCode = buildCode(m);
+    outEl.value = lastCode;
+    badgeEl.innerHTML = '已生成 · <b>784</b> 字节';
+  }
+
+  /* ============ 6. 事件绑定 ============ */
+  document.getElementById('btnClear').addEventListener('click', function(){
+    clearCanvas();
+    renderPreview(new Float32Array(G * G));
+    outEl.value = '// 画布为空，请先写一个数字';
+    badgeEl.textContent = '等待绘制…';
+    lastCode = '';
+  });
+
+  document.getElementById('btnGen').addEventListener('click', generate);
+
+  document.getElementById('brush').addEventListener('input', function(){
+    document.getElementById('brushVal').textContent = this.value;
+  });
+
+  document.getElementById('thr').addEventListener('input', function(){
+    document.getElementById('thrVal').textContent = this.value;
+    if (lastCode) generate();
+  });
+
+  ['binary','hex','invert','progmem','perline','varname'].forEach(function(id){
+    const el = document.getElementById(id);
+    el.addEventListener('change', function(){
+      // 二值模式下十六进制无意义
+      if (id === 'binary'){
+        document.getElementById('hex').disabled = el.checked;
+        document.getElementById('thrRow').classList.toggle('hidden', !el.checked);
+      }
+      if (lastCode) generate();
+    });
+  });
+
+  document.getElementById('thrRow').classList.add('hidden');
+
+  document.getElementById('btnCopy').addEventListener('click', function(){
+    if (!lastCode) return;
+    navigator.clipboard.writeText(lastCode).then(function(){
+      const b = document.getElementById('btnCopy');
+      const t = b.textContent;
+      b.textContent = '已复制 ✓';
+      setTimeout(function(){ b.textContent = t; }, 1200);
+    });
+  });
+
+  document.getElementById('btnDownload').addEventListener('click', function(){
+    if (!lastCode) return;
+    const name = (document.getElementById('varname').value || 'mnist_pic').trim();
+    const blob = new Blob([lastCode], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name + '.h';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  renderPreview(new Float32Array(G * G));
+})();
+</script>
+</body>
+</html>
