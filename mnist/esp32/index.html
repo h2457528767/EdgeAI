@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>ESP32 手写数字识别</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'Microsoft YaHei',sans-serif;
+     background:linear-gradient(135deg,#667eea,#764ba2);
+     min-height:100vh;padding:16px;display:flex;justify-content:center}
+.card{width:100%;max-width:420px;background:#fff;border-radius:16px;
+      padding:22px;box-shadow:0 12px 32px rgba(0,0,0,.25)}
+h1{font-size:19px;text-align:center;color:#2d3748}
+.sub{font-size:12px;text-align:center;color:#718096;margin:6px 0 16px}
+#cv{display:block;width:100%;max-width:280px;margin:0 auto;background:#000;
+    border-radius:10px;touch-action:none;cursor:crosshair;
+    box-shadow:inset 0 0 0 2px #2d3748}
+.btns{display:flex;gap:10px;margin:16px 0}
+button{flex:1;padding:13px;border:0;border-radius:9px;font-size:15px;
+       font-weight:600;color:#fff;cursor:pointer}
+#clr{background:#e53e3e}#rec{background:#38a169}
+button:active{transform:scale(.97)}
+.out{background:#f7fafc;border:2px solid #e2e8f0;border-radius:10px;
+     padding:14px;text-align:center;margin-bottom:12px}
+#num{font-size:44px;font-weight:700;color:#2d3748;line-height:1.1}
+#cf{display:block;font-size:13px;color:#718096;margin-top:4px}
+.bar{display:flex;align-items:center;gap:8px;font-size:12px;
+     color:#4a5568;margin:3px 0}
+.bar b{width:12px;text-align:right}
+.track{flex:1;height:9px;background:#edf2f7;border-radius:5px;overflow:hidden}
+.fill{height:100%;width:0;background:#667eea;border-radius:5px;
+      transition:width .25s}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>手写数字识别</h1>
+  <p class="sub">在黑色画布上书写 0-9</p>
+  <canvas id="cv" width="280" height="280"></canvas>
+  <div class="btns">
+    <button id="clr">清除</button>
+    <button id="rec">识别</button>
+  </div>
+  <div class="out"><span id="num">--</span><span id="cf">等待识别</span></div>
+  <div id="bars"></div>
+</div>
+<script>
+var cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+var drawing=false,lx=0,ly=0;
+
+function reset(){
+  ctx.fillStyle='#000';ctx.fillRect(0,0,280,280);
+  ctx.strokeStyle='#fff';ctx.lineWidth=18;
+  ctx.lineCap='round';ctx.lineJoin='round';
+}
+reset();
+
+function pos(e){
+  var r=cv.getBoundingClientRect();
+  return [(e.clientX-r.left)*280/r.width,(e.clientY-r.top)*280/r.height];
+}
+function dot(x,y){
+  ctx.beginPath();ctx.arc(x,y,9,0,6.2832);ctx.fillStyle='#fff';ctx.fill();
+}
+cv.addEventListener('pointerdown',function(e){
+  e.preventDefault();drawing=true;var p=pos(e);lx=p[0];ly=p[1];dot(lx,ly);
+});
+cv.addEventListener('pointermove',function(e){
+  if(!drawing)return;e.preventDefault();
+  var p=pos(e);
+  ctx.beginPath();ctx.moveTo(lx,ly);ctx.lineTo(p[0],p[1]);ctx.stroke();
+  lx=p[0];ly=p[1];
+});
+cv.addEventListener('pointerup',function(){drawing=false});
+cv.addEventListener('pointerleave',function(){drawing=false});
+
+// 280x280 -> MNIST 风格 28x28（bbox 归一化 + 质心居中）
+function to28(){
+  var src=ctx.getImageData(0,0,280,280).data;
+  var minX=280,minY=280,maxX=-1,maxY=-1,x,y,i;
+  for(y=0;y<280;y++){
+    for(x=0;x<280;x++){
+      if(src[(y*280+x)*4]>30){
+        if(x<minX)minX=x; if(x>maxX)maxX=x;
+        if(y<minY)minY=y; if(y>maxY)maxY=y;
+      }
+    }
+  }
+  if(maxX<0)return null;
+  var w=maxX-minX+1,h=maxY-minY+1;
+  var s=20/Math.max(w,h);
+  var dw=Math.max(1,Math.round(w*s)),dh=Math.max(1,Math.round(h*s));
+
+  var t=document.createElement('canvas');t.width=28;t.height=28;
+  var c=t.getContext('2d');
+  c.fillStyle='#000';c.fillRect(0,0,28,28);
+  c.imageSmoothingEnabled=true;
+  c.drawImage(cv,minX,minY,w,h,
+              Math.round((28-dw)/2),Math.round((28-dh)/2),dw,dh);
+
+  var d=c.getImageData(0,0,28,28).data;
+  var sx=0,sy=0,sum=0;
+  for(y=0;y<28;y++){
+    for(x=0;x<28;x++){
+      var v=d[(y*28+x)*4];sx+=x*v;sy+=y*v;sum+=v;
+    }
+  }
+  var out=new Uint8Array(784);
+  if(sum>0){
+    var dx=13.5-sx/sum, dy=13.5-sy/sum;
+    var t2=document.createElement('canvas');t2.width=28;t2.height=28;
+    var c2=t2.getContext('2d');
+    c2.fillStyle='#000';c2.fillRect(0,0,28,28);
+    c2.drawImage(t,dx,dy);
+    var d2=c2.getImageData(0,0,28,28).data;
+    for(i=0;i<784;i++)out[i]=d2[i*4];
+  }else{
+    for(i=0;i<784;i++)out[i]=d[i*4];
+  }
+  return out;
+}
+
+function show(n,c){
+  document.getElementById('num').textContent=n;
+  document.getElementById('cf').textContent=c;
+}
+function bars(p){
+  var box=document.getElementById('bars'),h='';
+  for(var k=0;k<10;k++){
+    var w=Math.round(p[k]*100);
+    h+='<div class="bar"><b>'+k+'</b><div class="track">'+
+       '<div class="fill" style="width:'+w+'%"></div></div>'+
+       '<span>'+w+'%</span></div>';
+  }
+  box.innerHTML=h;
+}
+
+document.getElementById('clr').onclick=function(){
+  reset();show('--','等待识别');document.getElementById('bars').innerHTML='';
+};
+
+document.getElementById('rec').onclick=async function(){
+  var px=to28();
+  if(!px){show('--','请先书写数字');return;}
+  show('...','识别中');
+  try{
+    var r=await fetch('/rec',{method:'POST',
+      headers:{'Content-Type':'application/octet-stream'},body:px});
+    var j=await r.json();
+    if(j.e){show('!',j.e);return;}
+    show(j.d,'置信度 '+(j.c*100).toFixed(1)+'%');
+    bars(j.p);
+  }catch(err){
+    show('!','请求失败，请重试');
+  }
+};
+</script>
+</body>
+</html>
